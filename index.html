@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Catz 5–style Interactive Cat — Mouse Toy + Swishy Tail</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { background:#ffffff; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; }
+    #wrap { position: fixed; inset: 0; display: grid; grid-template-rows: 1fr auto; }
+    canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .hud { 
+      display:flex; gap: 10px; align-items:center; justify-content:center; padding: 10px 12px; 
+      color:#444; font-size: 14px; user-select:none; border-top: 1px solid #eee; background: rgba(255,255,255,0.9);
+    }
+    .badge { padding:2px 8px; border:1px solid #ddd; border-radius: 999px; font-size:12px; background:#fafafa; }
+    .key { padding:2px 6px; border:1px solid #aaa; border-bottom-width:2px; border-right-width:2px; border-radius:6px; background:#f8f8f8; font-weight:600; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="scene" aria-label="Little cat play area" role="img"></canvas>
+    <div class="hud" aria-hidden="false">
+      <span class="badge">Click/tap: drop a mouse toy</span>
+      <span class="badge"><span class="key">R</span> toggle run/walk</span>
+      <span class="badge"><span class="key">S</span> sit/stand</span>
+      <span class="badge"><span class="key">M</span> meow bubble</span>
+      <span class="badge">Cat roams autonomously</span>
+    </div>
+  </div>
+
+  <script>
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+
+  const rand = (a,b)=> a + Math.random()*(b-a);
+  const lerp = (a,b,t)=> a+(b-a)*t;
+  const now = ()=> performance.now()/1000;
+
+  const State = { IDLE:'idle', WALK:'walk', RUN:'run', SIT:'sit', CHASE:'chase' };
+
+  const cat = {
+    x: 0,
+    y: 0,
+    dir: 1,
+    state: State.WALK,
+    speedWalk: 48,
+    speedRun: 110,
+    legTime: 0,
+    mood: 0.7,
+    bubble: '',
+    bubbleUntil: 0,
+    target: null,
+    scale: 2.25,
+    palette: { coatA: '#c9b297', coatB: '#a98d75', ear: '#8f6f5b', nose: '#333', eye: '#111', spot: '#544538' },
+    spots: []
+  };
+  for(let i=0;i<5;i++) cat.spots.push({ ox: rand(-14, 16), oy: rand(-8, 8), r: rand(2,4)});
+
+  const world = {
+    floor: () => canvas.clientHeight - 64,
+    toys: []
+  };
+
+  function resize() {
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cat.x = canvas.clientWidth/2;
+    cat.y = world.floor();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  class MouseToy {
+    constructor(x,y){
+      this.x=x; this.y=y; this.vx=rand(-60,60); this.vy=rand(-120,-80);
+      this.state='air';
+      this.timer=0; this.dead=false;
+      this.w=16; this.h=10;
+    }
+    step(dt, floor){
+      if(this.dead) return;
+      if(this.state==='air'){
+        this.vy += 420*dt;
+        this.x += this.vx*dt; this.y += this.vy*dt;
+        if(this.y > floor-2){
+          this.y = floor-2; this.vy *= -0.35; this.vx *= 0.9;
+          if(Math.abs(this.vy)<40){ this.state='land'; this.timer=0; }
+        }
+      } else if(this.state==='land'){
+        this.timer += dt;
+        if(this.timer>0.15){
+          this.state='scurry';
+          this.vx = (Math.random()<0.5?-1:1) * rand(40,80);
+          this.timer=0;
+        }
+      } else if(this.state==='scurry'){
+        this.timer+=dt;
+        this.x += this.vx*dt;
+        this.vx *= 0.98;
+        if(this.x<6){ this.x=6; this.vx*=-0.7; }
+        if(this.x>canvas.clientWidth-6){ this.x=canvas.clientWidth-6; this.vx*=-0.7; }
+        if(this.timer>1.2 || Math.abs(this.vx)<8){ this.state='rest'; this.timer=0; }
+      } else if(this.state==='rest'){
+        this.timer+=dt; if(this.timer>6){ this.dead=true; }
+      }
+    }
+    draw(ctx){
+      ctx.save();
+      const dir = (cat.x < this.x) ? -1 : 1;
+      ctx.translate(this.x, this.y);
+      ctx.scale(dir,1);
+      ctx.fillStyle = '#7f7f86';
+      ctx.strokeStyle = '#6b6b72';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(0, -4, this.w*0.35, this.h*0.45, 0, 0, Math.PI*2);
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(6,-5);
+      ctx.quadraticCurveTo(10,-6, 10,-4);
+      ctx.quadraticCurveTo(10,-2, 6,-3);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#9a9aa2';
+      ctx.beginPath(); ctx.arc(5,-8,2.2,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(8,-8,1.8,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#1d1d1f'; ctx.beginPath(); ctx.arc(7,-5,0.8,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = '#6b6b72'; ctx.lineWidth = 1.2; ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(-6,-4);
+      const t = now()*6;
+      ctx.quadraticCurveTo(-10 + Math.sin(t)*2, -6, -14, -5);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function say(text, dur=1.2){ cat.bubble = text; cat.bubbleUntil = now() + dur; }
+
+  canvas.addEventListener('pointerup', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    world.toys.push(new MouseToy(x, y));
+    cat.state = State.CHASE;
+    say('!');
+  });
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key==='r' || e.key==='R') cat.state = (cat.state===State.RUN? State.WALK: State.RUN);
+    if(e.key==='s' || e.key==='S') cat.state = (cat.state===State.SIT? State.WALK: State.SIT);
+    if(e.key==='m' || e.key==='M') say('meow', 1.0);
+  });
+
+  let nextDecisionAt = 0;
+  function think(t){
+    if (t < nextDecisionAt) return;
+    nextDecisionAt = t + rand(1.2, 2.6);
+    const toy = world.toys.find(to => !to.dead);
+    if(toy && Math.hypot(toy.x - cat.x, toy.y - cat.y) < 360){
+      cat.target = toy; cat.state = State.CHASE; return;
+    }
+    const r = Math.random();
+    if(r < 0.18) cat.state = State.IDLE;
+    else if(r < 0.72) cat.state = State.WALK;
+    else if(r < 0.9) cat.state = State.RUN;
+    else cat.state = State.SIT;
+    if(Math.random()<0.45) cat.dir *= -1;
+  }
+
+  let last = now();
+  function step(){
+    const t = now();
+    let dt = Math.min(t - last, 0.033); last = t;
+    const floor = world.floor();
+    cat.y = floor;
+    think(t);
+    if(cat.state===State.CHASE && cat.target){
+      const trg = cat.target;
+      if(trg.dead) { cat.target=null; cat.state = State.WALK; }
+      else {
+        const dx = trg.x - cat.x;
+        cat.dir = dx>=0 ? 1 : -1;
+        const dist = Math.abs(dx);
+        const sp = dist>140 ? cat.speedRun : lerp(cat.speedWalk, cat.speedRun, dist/140);
+        cat.x += Math.sign(dx) * sp * dt;
+        if(dist < 14){
+          say('purr', 0.8);
+          trg.dead = true;
+          cat.state = State.IDLE; cat.target = null;
+        }
+      }
+    }
+    if(cat.state===State.WALK) cat.x += cat.dir * cat.speedWalk * dt;
+    if(cat.state===State.RUN)  cat.x += cat.dir * cat.speedRun  * dt;
+    if(cat.state===State.IDLE || cat.state===State.SIT){
+      const cx = canvas.clientWidth/2;
+      cat.x = lerp(cat.x, cx, 0.02);
+    }
+    const margin = 24;
+    if(cat.x < margin){ cat.x = margin; cat.dir = 1; }
+    if(cat.x > canvas.clientWidth - margin){ cat.x = canvas.clientWidth - margin; cat.dir = -1; }
+    const gaitHz = (cat.state===State.RUN? 4.4 : cat.state===State.WALK? 2.1 : 1.0);
+    cat.legTime += dt * gaitHz;
+    for(const to of world.toys) to.step(dt, floor);
+    world.toys = world.toys.filter(t => !t.dead);
+    draw();
+    requestAnimationFrame(step);
+  }
+
+  function drawCat(ctx, x, y, scale){
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale * cat.dir, scale);
+    const P = cat.palette;
+    const bodyLen = 66, bodyHt = 26;
+    const headR = 14;
+    const tailLen = 42;
+    const k = Math.sin(cat.legTime * Math.PI*2);
+    const moving = (cat.state===State.WALK || cat.state===State.RUN || cat.state===State.CHASE);
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(0, 8, 36, 8, 0, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+    const swish = Math.sin(now()*2.6) * (moving? 8 : 12);
+    ctx.strokeStyle = P.coatB; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-bodyLen*0.35, -2);
+    ctx.quadraticCurveTo(-bodyLen*0.35 - tailLen*0.25, -8 + swish*0.2, -bodyLen*0.35 - tailLen*0.55, -10 + swish*0.6);
+    ctx.quadraticCurveTo(-bodyLen*0.35 - tailLen*0.85, -10 + swish, -bodyLen*0.35 - tailLen*1.05, -6 + swish*0.4);
+    ctx.stroke();
+    function leg(xo, phase, back){
+      const swing = (moving? (cat.state===State.RUN? 9:6): 1.2);
+      const a = Math.sin(cat.legTime*2*Math.PI + phase) * swing * (back? -1:1);
+      ctx.save();
+      ctx.translate(xo, 6);
+      ctx.rotate(a*Math.PI/180);
+      ctx.strokeStyle = P.coatB; ctx.lineWidth = 6; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(10,12); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(10,12); ctx.lineTo(16,18); ctx.stroke();
+      ctx.restore();
+    }
+    leg(-16, 0, false);
+    leg(  -2, Math.PI, true);
+    leg(  -4, Math.PI, false);
+    leg(  12, 0, true);
+    ctx.fillStyle = P.coatA; ctx.strokeStyle = P.coatB; ctx.lineWidth = 2;
+    ctx.beginPath();
+    const r = bodyHt/2;
+    ctx.moveTo(-bodyLen/2 + r, -bodyHt/2);
+    ctx.lineTo( bodyLen/2 - r, -bodyHt/2);
+    ctx.quadraticCurveTo( bodyLen/2, -bodyHt/2, bodyLen/2, 0);
+    ctx.quadraticCurveTo( bodyLen/2,  bodyHt/2, bodyLen/2 - r,  bodyHt/2);
+    ctx.lineTo(-bodyLen/2 + r,  bodyHt/2);
+    ctx.quadraticCurveTo(-bodyLen/2,  bodyHt/2, -bodyLen/2, 0);
+    ctx.quadraticCurveTo(-bodyLen/2, -bodyHt/2, -bodyLen/2 + r, -bodyHt/2);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = P.spot; ctx.globalAlpha = 0.35;
+    for(const s of cat.spots){ ctx.beginPath(); ctx.ellipse(s.ox, s.oy, s.r+3, s.r, 0.3, 0, Math.PI*2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    const headBob = moving? k*1.2 : 0;
+    ctx.save();
+    ctx.translate(bodyLen/2 - 8, -12 + headBob);
+    ctx.fillStyle = P.coatA; ctx.strokeStyle = P.coatB; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0,0, headR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = P.ear; ctx.strokeStyle = P.coatB; ctx.lineWidth=1.5;
+    function ear(ax, ay, rot){
+      ctx.save(); ctx.translate(ax, ay); ctx.rotate(rot);
+      ctx.beginPath();
+      ctx.moveTo(-1,-1); ctx.lineTo(6,-6); ctx.lineTo(8,0); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+    ear(-8, -8, -0.9);
+    ear(  8, -8,  0.9);
+    const blink = (Math.sin(cat.legTime*4*Math.PI) > 0.92) ? 0.2 : 1;
+    ctx.fillStyle = P.eye;
+    ctx.beginPath(); ctx.ellipse(-5, -2, 2.2, 2.2*blink, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( 5, -2, 2.2, 2.2*blink, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = P.nose; ctx.beginPath(); ctx.arc(0,1.5,1.4,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(0,3); ctx.lineTo(0,5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-2.5,5); ctx.quadraticCurveTo(0,6,2.5,5); ctx.stroke();
+    ctx.strokeStyle = '#444'; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctx.moveTo(-3,2); ctx.lineTo(-18,-1);
+    ctx.moveTo(-3,4); ctx.lineTo(-22,5);
+    ctx.moveTo(-3,6); ctx.lineTo(-18,9);
+    ctx.moveTo( 3,2); ctx.lineTo( 18,-1);
+    ctx.moveTo( 3,4); ctx.lineTo( 22,5);
+    ctx.moveTo( 3,6); ctx.lineTo( 18,9);
+    ctx.stroke();
+    ctx.restore();
+    if(cat.state===State.SIT || cat.state===State.IDLE){
+      ctx.save();
+      ctx.strokeStyle = P.coatB; ctx.lineWidth=6; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(-10, 8); ctx.quadraticCurveTo(-20, 12, -6, 16); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+    if(cat.bubble && now() < cat.bubbleUntil){
+      ctx.save();
+      ctx.translate(x + (cat.dir>0? 32 : -32), y - 54);
+      const text = cat.bubble;
+      ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+      const w = Math.max(26, ctx.measureText(text).width + 12);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 1.5;
+      const r2=8;
+      ctx.beginPath();
+      ctx.moveTo(-w/2 + r2, 0);
+      ctx.arcTo(w/2, 0, w/2, 22, r2);
+      ctx.arcTo(w/2, 22, -w/2, 22, r2);
+      ctx.arcTo(-w/2, 22, -w/2, 0, r2);
+      ctx.arcTo(-w/2, 0, w/2, 0, r2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 22); ctx.lineTo(6, 28); ctx.lineTo(2, 22); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#333'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text, 0, 11);
+      ctx.restore();
+    }
+  }
+
+  function drawGround(){
+    const floor = world.floor();
+    ctx.save(); ctx.strokeStyle = '#eaeaea'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, floor+0.5); ctx.lineTo(canvas.clientWidth, floor+0.5); ctx.stroke(); ctx.restore();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0, canvas.clientWidth, canvas.clientHeight);
+    drawGround();
+    for(const to of world.toys) to.draw(ctx);
+    drawCat(ctx, cat.x, cat.y-12, cat.scale);
+  }
+
+  requestAnimationFrame(step);
+
+  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  if(mq.matches){ cat.state = State.IDLE; }
+  </script>
+</body>
+</html>
